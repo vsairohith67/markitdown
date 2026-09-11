@@ -79,7 +79,7 @@ function formatRelativeTime(timestamp) {
 
 function extensionFor(filename = "") {
   const pieces = filename.toLowerCase().split(".");
-  return pieces.length > 1 ? pieces.at(-1) : "file";
+  return pieces.length > 1 ? pieces[pieces.length - 1] : "file";
 }
 
 function fileKindFor(filename = "") {
@@ -127,7 +127,7 @@ function downloadMarkdown(filename, markdown) {
 }
 
 async function copyToClipboard(text) {
-  if (navigator.clipboard?.writeText) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
     await navigator.clipboard.writeText(text);
     return;
   }
@@ -297,7 +297,8 @@ function App() {
   const handleDrop = (event) => {
     event.preventDefault();
     setIsDragging(false);
-    acceptFile(event.dataTransfer.files?.[0]);
+    const files = event.dataTransfer && event.dataTransfer.files;
+    acceptFile(files && files.length > 0 ? files[0] : null);
   };
 
   const clearFile = () => {
@@ -343,7 +344,9 @@ function App() {
       setResult(converted);
       setViewMode("rendered");
       const historyItem = {
-        id: window.crypto?.randomUUID?.() || `${Date.now()}-${file.name}`,
+        id: window.crypto && typeof window.crypto.randomUUID === "function"
+          ? window.crypto.randomUUID()
+          : `${Date.now()}-${file.name}`,
         filename: converted.filename || file.name,
         bytes: converted.bytes || file.size,
         markdown: converted.markdown || "",
@@ -365,7 +368,7 @@ function App() {
   };
 
   const handleCopy = async () => {
-    if (!result?.markdown) return;
+    if (!result || !result.markdown) return;
     try {
       await copyToClipboard(result.markdown);
       setCopyState("copied");
@@ -394,7 +397,7 @@ function App() {
     setShowSettings(false);
   };
 
-  const hasOutput = Boolean(result?.markdown);
+  const hasOutput = Boolean(result && result.markdown);
   const statusText = isConverting
     ? "Converting your file"
     : hasOutput
@@ -464,14 +467,17 @@ function App() {
               ref={inputRef}
               className="visually-hidden"
               type="file"
-              onChange={(event) => acceptFile(event.target.files?.[0])}
+              onChange={(event) => {
+                const files = event.target && event.target.files;
+                acceptFile(files && files.length > 0 ? files[0] : null);
+              }}
             />
 
             {!file ? (
               <button
                 type="button"
                 className={`dropzone ${isDragging ? "dropzone-active" : ""}`}
-                onClick={() => inputRef.current?.click()}
+                onClick={() => { if (inputRef.current) inputRef.current.click(); }}
                 onDragEnter={(event) => { event.preventDefault(); setIsDragging(true); }}
                 onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }}
                 onDragLeave={(event) => { if (event.currentTarget === event.target) setIsDragging(false); }}
