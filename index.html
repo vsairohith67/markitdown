@@ -9,9 +9,39 @@
       content="A calm, private workspace for turning files into clean Markdown."
     />
     <title>MarkItDown Studio</title>
+    <style>
+      :root { background: #ffffff; color: #111319; }
+      body { margin: 0; background: #ffffff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      #boot-fallback { min-height: 100vh; display: grid; place-items: center; padding: 24px; box-sizing: border-box; text-align: center; }
+      #boot-fallback-card { max-width: 360px; }
+      #boot-fallback-mark { width: 44px; height: 44px; display: grid; place-items: center; margin: 0 auto 18px; border-radius: 13px; background: #111319; color: #ffffff; font-weight: 800; }
+      #boot-fallback-title { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.04em; }
+      #boot-message { margin: 10px 0 0; color: #697386; font-size: 14px; line-height: 1.5; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot-fallback" role="status">
+        <div id="boot-fallback-card">
+          <div id="boot-fallback-mark" aria-hidden="true">M</div>
+          <p id="boot-fallback-title">MarkItDown Studio</p>
+          <p id="boot-message">Loading your private workspace…</p>
+        </div>
+      </div>
+    </div>
+    <script>
+      (() => {
+        const message = document.getElementById("boot-message");
+        const showLoadError = () => {
+          if (!document.documentElement.dataset.appReady && message) {
+            message.textContent = "The workspace could not load. Please refresh this page.";
+          }
+        };
+        window.addEventListener("error", showLoadError);
+        window.addEventListener("unhandledrejection", showLoadError);
+        window.setTimeout(showLoadError, 9000);
+      })();
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
