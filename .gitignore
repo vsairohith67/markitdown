@@ -166,3 +166,17 @@ cython_debug/
 src/.DS_Store
 .DS_Store
 .cursorrules
+
+# MarkItDown Studio web app
+node_modules/
+.qa-runtime/
+qa/
+test-results/
+dist/
+.vercel/
+.netlify/
+.vite/
+*.tsbuildinfo
+
+.vercel
+.env*
