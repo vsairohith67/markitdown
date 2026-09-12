@@ -1084,6 +1084,18 @@ h1 span {
   color: var(--accent);
 }
 
+.md-preview-note {
+  margin-top: 24px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--muted);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .md-blank {
   height: 9px;
 }

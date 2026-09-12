@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen,
   Check,
@@ -34,6 +34,7 @@ const THEME_KEY = "markitdown-studio-theme-v1";
 const TOKEN_KEY = "markitdown-studio-access-token-v1";
 const MAX_FILE_BYTES = 3_000_000;
 const CHATGPT_SHARE_HOSTS = ["chatgpt.com", "chat.openai.com"];
+const MAX_RENDERED_PREVIEW_LINES = 1000;
 
 const supportedFormats = [
   "PDF",
@@ -192,7 +193,13 @@ function Switch({ checked, onChange, disabled = false, label }) {
 }
 
 function MarkdownPreview({ markdown }) {
-  const lines = markdown.split("\n");
+  const { lines, isTruncated } = useMemo(() => {
+    const allLines = markdown.split("\n");
+    return {
+      lines: allLines.slice(0, MAX_RENDERED_PREVIEW_LINES),
+      isTruncated: allLines.length > MAX_RENDERED_PREVIEW_LINES,
+    };
+  }, [markdown]);
   return (
     <div className="markdown-rendered" aria-label="Rendered Markdown preview">
       {lines.map((line, index) => {
@@ -229,6 +236,11 @@ function MarkdownPreview({ markdown }) {
         if (line.startsWith("```")) return <div className="md-code-marker" key={key}>{line}</div>;
         return <p key={key}>{line}</p>;
       })}
+      {isTruncated && (
+        <div className="md-preview-note">
+          Preview trimmed for speed. The full conversation is available in the Markdown tab and Download .md.
+        </div>
+      )}
     </div>
   );
 }
