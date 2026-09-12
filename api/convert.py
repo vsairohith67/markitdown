@@ -270,6 +270,14 @@ def _chatgpt_html_to_markdown(html: bytes) -> tuple[str, str]:
             markdown_parts.extend(["", f"## {role.title()}", "", text])
         return title, "\n".join(markdown_parts).strip() + "\n"
 
+    unavailable_text = soup.get_text(" ", strip=True).lower()
+    if (
+        "can't load shared conversation" in unavailable_text
+        or "couldn't load shared conversation" in unavailable_text
+        or "shared conversation not found" in unavailable_text
+    ):
+        raise ValueError("That ChatGPT shared conversation is unavailable or no longer public.")
+
     # A share page may change its HTML shell over time. Let the repository's
     # native HTML converter handle a readable page when message markers move.
     for tag in soup(["script", "style", "noscript", "svg", "nav", "footer"]):
