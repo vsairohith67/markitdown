@@ -35,15 +35,17 @@ The project is configured for a single Vercel project:
 - Plugins and Azure integrations are disabled in the hosted adapter.
 - The UI also accepts canonical public ChatGPT share links and fetches only
   allowlisted `chatgpt.com/share/...` (or legacy `chat.openai.com/share/...`)
-  pages. Redirects remain inside that allowlist; arbitrary URL fetching is not
-  exposed.
+  pages. Large React streaming responses are reduced to the selected
+  conversation branch before Markdown conversion. Redirects remain inside that
+  allowlist; arbitrary URL fetching is not exposed.
 
 Vercel's function request and response payload ceiling means the UI keeps the
   default hosted upload limit at 3 MB. Larger files should be converted with
   the package locally or through a separately managed worker/container. The
   optional `MARKITDOWN_ACCESS_TOKEN` environment variable enables a simple
   private gate; the Settings panel can store the matching token in the current
-  browser.
+  browser. ChatGPT share pages up to 50 MB are accepted so large conversations
+  with streamed page data can still be reduced in memory.
 
 ## Privacy posture
 

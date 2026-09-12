@@ -1,8 +1,9 @@
 """Small, memory-only HTTP adapter for the MarkItDown package.
 
-The public UI sends one base64-encoded file at a time. Nothing is written to
-disk by this adapter, and the underlying package is imported from this
-checkout so the web surface tracks the repository's conversion behavior.
+The public UI sends one base64-encoded file or one allowlisted ChatGPT share
+URL at a time. Nothing is written to disk by this adapter, and the underlying
+package is imported from this checkout so the web surface tracks the
+repository's conversion behavior.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ MAX_FILE_BYTES = int(os.getenv("MARKITDOWN_MAX_FILE_BYTES", "3000000"))
 MAX_REQUEST_BYTES = int(os.getenv("MARKITDOWN_MAX_REQUEST_BYTES", "4400000"))
 MAX_MARKDOWN_BYTES = int(os.getenv("MARKITDOWN_MAX_MARKDOWN_BYTES", "4000000"))
 MAX_FILENAME_LENGTH = 180
-MAX_CHATGPT_PAGE_BYTES = int(os.getenv("MARKITDOWN_MAX_CHATGPT_PAGE_BYTES", "8000000"))
+MAX_CHATGPT_PAGE_BYTES = int(os.getenv("MARKITDOWN_MAX_CHATGPT_PAGE_BYTES", "50000000"))
 MAX_CHATGPT_REDIRECTS = 3
 CHATGPT_SHARE_HOSTS = {"chatgpt.com", "chat.openai.com"}
 CHATGPT_REQUEST_HEADERS = {
@@ -237,6 +238,96 @@ def _script_json_values(soup: BeautifulSoup) -> list[Any]:
     return values
 
 
+def _resolve_react_router_value(stream: list[Any], index: Any, memo: dict[int, Any]) -> Any:
+    """Resolve the compact reference array used by ChatGPT's share payload."""
+
+    if not isinstance(index, int):
+        return index
+    if index < 0:
+        return None
+    if index >= len(stream):
+        return index
+    if index in memo:
+        return memo[index]
+
+    value = stream[index]
+    if isinstance(value, dict):
+        resolved: dict[str, Any] = {}
+        memo[index] = resolved
+        for raw_key, raw_value in value.items():
+            key_index = int(raw_key[1:]) if raw_key.startswith("_") else raw_key
+            key = _resolve_react_router_value(stream, key_index, memo) if isinstance(key_index, int) else key_index
+            resolved[str(key)] = _resolve_react_router_value(stream, raw_value, memo)
+        return resolved
+    if isinstance(value, list):
+        resolved_list: list[Any] = []
+        memo[index] = resolved_list
+        for item in value:
+            resolved_list.append(_resolve_react_router_value(stream, item, memo))
+        return resolved_list
+    return value
+
+
+def _react_router_stream_messages(soup: BeautifulSoup) -> tuple[str | None, list[tuple[str, str]]]:
+    """Extract the selected conversation branch from ChatGPT's RSC stream."""
+
+    decoder = json.JSONDecoder()
+    for script in soup.find_all("script"):
+        raw = script.string or script.get_text()
+        if not raw or "streamController.enqueue" not in raw:
+            continue
+        match = re.search(r"streamController\.enqueue\(\s*", raw)
+        if not match:
+            continue
+        try:
+            encoded_stream, _ = decoder.raw_decode(raw[match.end():])
+            stream = json.loads(encoded_stream) if isinstance(encoded_stream, str) else encoded_stream
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(stream, list):
+            continue
+
+        root = _resolve_react_router_value(stream, 0, {})
+        loader_data = root.get("loaderData") if isinstance(root, dict) else None
+        if not isinstance(loader_data, dict):
+            continue
+        route_data = next(
+            (
+                value
+                for value in loader_data.values()
+                if isinstance(value, dict) and isinstance(value.get("serverResponse"), dict)
+            ),
+            None,
+        )
+        server_response = route_data.get("serverResponse") if isinstance(route_data, dict) else None
+        conversation = server_response.get("data") if isinstance(server_response, dict) else None
+        mapping = conversation.get("mapping") if isinstance(conversation, dict) else None
+        current_node = conversation.get("current_node") if isinstance(conversation, dict) else None
+        if not isinstance(mapping, dict) or not isinstance(current_node, str):
+            continue
+
+        branch: list[tuple[str, str]] = []
+        visited: set[str] = set()
+        while current_node and current_node not in visited:
+            visited.add(current_node)
+            node = mapping.get(current_node)
+            if not isinstance(node, dict):
+                break
+            message = node.get("message")
+            if isinstance(message, dict):
+                role = _message_role(message)
+                text = _message_text(message.get("content"))
+                if role in {"user", "assistant"} and text:
+                    branch.append((role, text))
+            parent = node.get("parent")
+            current_node = parent if isinstance(parent, str) else ""
+
+        if branch:
+            title = conversation.get("title")
+            return title if isinstance(title, str) and title.strip() else None, list(reversed(branch))
+    return None, []
+
+
 def _chatgpt_title(soup: BeautifulSoup) -> str:
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
     if title:
@@ -263,6 +354,12 @@ def _chatgpt_html_to_markdown(html: bytes) -> tuple[str, str]:
     if not messages:
         for value in _script_json_values(soup):
             _collect_json_messages(value, messages, seen)
+
+    if not messages:
+        stream_title, stream_messages = _react_router_stream_messages(soup)
+        if stream_messages:
+            title = stream_title.strip() if stream_title else title
+            messages.extend(stream_messages)
 
     if messages:
         markdown_parts = [f"# {title}"]
