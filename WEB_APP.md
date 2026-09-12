@@ -32,8 +32,11 @@ The project is configured for a single Vercel project:
 - Vite publishes `dist/`.
 - `api/convert.py` is exposed at `/api/convert`.
 - The function calls `MarkItDown.convert_stream()` with an in-memory stream.
-- Plugins, Azure integrations, and remote URL fetching are disabled in the
-  hosted adapter.
+- Plugins and Azure integrations are disabled in the hosted adapter.
+- The UI also accepts canonical public ChatGPT share links and fetches only
+  allowlisted `chatgpt.com/share/...` (or legacy `chat.openai.com/share/...`)
+  pages. Redirects remain inside that allowlist; arbitrary URL fetching is not
+  exposed.
 
 Vercel's function request and response payload ceiling means the UI keeps the
   default hosted upload limit at 3 MB. Larger files should be converted with
@@ -48,13 +51,15 @@ The adapter does not write uploaded bytes to disk or persist conversion data.
 Recent conversion results are stored only in the browser's local storage so a
 user can reopen them on the same device. A public deployment without
 `MARKITDOWN_ACCESS_TOKEN` should still be treated as a personal utility and
-not as a place for sensitive files.
+not as a place for sensitive files. ChatGPT links must be public shared links;
+private `/c/...` conversation URLs require a ChatGPT login and cannot be read
+securely by this standalone deployment. The fetched share page is processed in
+memory and the resulting Markdown is kept only in the browser history.
 
 ## Supported formats
 
 The UI follows the engine's built-in converters: PDF, DOCX, PPTX, XLSX, XLS,
 images, audio, HTML, plain text, CSV, JSON, XML, ZIP, EPUB, Jupyter notebooks,
 Outlook MSG, RSS, Wikipedia pages, YouTube URLs, and Bing result pages. The
-hosted UI accepts files only; URL-oriented converters are deliberately not
-exposed because a public URL fetcher needs additional SSRF controls and a
-separate product decision.
+hosted UI accepts files plus public ChatGPT shared conversations. Other
+URL-oriented converters remain deliberately disabled.

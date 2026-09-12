@@ -400,6 +400,130 @@ h1 span {
   background: var(--success);
 }
 
+.source-mode-switcher {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.source-mode-switcher button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 680;
+  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.source-mode-switcher button:hover {
+  color: var(--text);
+}
+
+.source-mode-switcher button.source-mode-active {
+  background: var(--background);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgba(23, 37, 56, 0.08);
+}
+
+.source-mode-switcher button.source-mode-active svg {
+  color: var(--accent);
+}
+
+.url-source {
+  min-height: 275px;
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.url-label {
+  margin-bottom: 9px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.url-input-wrap {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 13px;
+  background: var(--surface);
+  color: var(--accent);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.url-input-wrap:focus-within {
+  border-color: var(--accent);
+  background: var(--background);
+  box-shadow: 0 0 0 3px rgba(10, 104, 245, 0.11);
+}
+
+.url-input {
+  min-width: 0;
+  width: 100%;
+  height: 50px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.url-input::placeholder {
+  color: var(--quiet);
+}
+
+.url-clear {
+  width: 27px;
+  height: 27px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: var(--surface-strong);
+  color: var(--muted);
+}
+
+.url-clear:hover {
+  color: var(--text);
+}
+
+.url-help {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.url-help svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--success);
+}
+
 .status-dot-loading {
   background: var(--accent);
   animation: pulse 1s ease-in-out infinite;

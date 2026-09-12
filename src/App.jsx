@@ -16,6 +16,7 @@ import {
   FileType2,
   FileUp,
   FileVideo2,
+  Link2,
   LockKeyhole,
   Moon,
   RotateCcw,
@@ -32,6 +33,7 @@ const STORAGE_KEY = "markitdown-studio-history-v1";
 const THEME_KEY = "markitdown-studio-theme-v1";
 const TOKEN_KEY = "markitdown-studio-access-token-v1";
 const MAX_FILE_BYTES = 3_000_000;
+const CHATGPT_SHARE_HOSTS = ["chatgpt.com", "chat.openai.com"];
 
 const supportedFormats = [
   "PDF",
@@ -80,6 +82,19 @@ function formatRelativeTime(timestamp) {
 function extensionFor(filename = "") {
   const pieces = filename.toLowerCase().split(".");
   return pieces.length > 1 ? pieces[pieces.length - 1] : "file";
+}
+
+function isChatGPTShareUrl(value) {
+  try {
+    const parsed = new URL(value.trim());
+    const path = parsed.pathname || "";
+    return parsed.protocol === "https:"
+      && CHATGPT_SHARE_HOSTS.indexOf(parsed.hostname.toLowerCase()) !== -1
+      && path.indexOf("/share/") === 0
+      && Boolean(path.slice("/share/".length).split("/", 1)[0]);
+  } catch {
+    return false;
+  }
 }
 
 function fileKindFor(filename = "") {
@@ -227,7 +242,7 @@ function EmptyPreview() {
         <span />
       </div>
       <h3>Your Markdown will appear here</h3>
-      <p>Choose a file to start a clean, structured preview.</p>
+      <p>Choose a file or paste a ChatGPT link to start a clean, structured preview.</p>
     </div>
   );
 }
@@ -248,6 +263,8 @@ function HistoryRow({ item, onOpen }) {
 function App() {
   const inputRef = useRef(null);
   const [file, setFile] = useState(null);
+  const [sourceMode, setSourceMode] = useState("file");
+  const [chatgptUrl, setChatgptUrl] = useState("");
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState(() => {
     const stored = readStorage(STORAGE_KEY, []);
@@ -282,12 +299,25 @@ function App() {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [showSettings]);
 
+  const chooseSourceMode = (mode) => {
+    if (mode === sourceMode) return;
+    setSourceMode(mode);
+    setFile(null);
+    setChatgptUrl("");
+    setResult(null);
+    setError("");
+    setCopyState("idle");
+    setIsDragging(false);
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
   const acceptFile = (candidate) => {
     if (!candidate) return;
     if (candidate.size > MAX_FILE_BYTES) {
       setError(`That file is ${formatBytes(candidate.size)}. The hosted workspace accepts files up to 3 MB.`);
       return;
     }
+    setSourceMode("file");
     setFile(candidate);
     setResult(null);
     setError("");
@@ -310,24 +340,36 @@ function App() {
   };
 
   const handleConvert = async () => {
-    if (!file || isConverting) return;
+    if (isConverting) return;
+    const cleanChatgptUrl = chatgptUrl.trim();
+    if (sourceMode === "file" && !file) return;
+    if (sourceMode === "chatgpt" && !isChatGPTShareUrl(cleanChatgptUrl)) {
+      setError("Paste a public ChatGPT shared link that starts with https://chatgpt.com/share/.");
+      return;
+    }
     setIsConverting(true);
     setError("");
     setCopyState("idle");
     const startedAt = performance.now();
     try {
-      const data = await readFileAsBase64(file);
       const headers = { "Content-Type": "application/json" };
       if (accessToken.trim()) headers["X-MarkItDown-Token"] = accessToken.trim();
+      const requestBody = sourceMode === "chatgpt"
+        ? {
+            source: "chatgpt",
+            url: cleanChatgptUrl,
+            options: { keepDataUris },
+          }
+        : {
+            filename: file.name,
+            mimeType: file.type || null,
+            data: await readFileAsBase64(file),
+            options: { keepDataUris },
+          };
       const response = await fetch("/api/convert", {
         method: "POST",
         headers,
-        body: JSON.stringify({
-          filename: file.name,
-          mimeType: file.type || null,
-          data,
-          options: { keepDataUris },
-        }),
+        body: JSON.stringify(requestBody),
       });
       let payload = {};
       try {
@@ -346,9 +388,9 @@ function App() {
       const historyItem = {
         id: window.crypto && typeof window.crypto.randomUUID === "function"
           ? window.crypto.randomUUID()
-          : `${Date.now()}-${file.name}`,
-        filename: converted.filename || file.name,
-        bytes: converted.bytes || file.size,
+          : `${Date.now()}-${converted.filename || (file && file.name) || "chatgpt-conversation.md"}`,
+        filename: converted.filename || (file && file.name) || "chatgpt-conversation.md",
+        bytes: converted.bytes || (file && file.size) || 0,
         markdown: converted.markdown || "",
         title: converted.title || null,
         convertedAt: converted.convertedAt,
@@ -360,7 +402,7 @@ function App() {
       const message = conversionError instanceof TypeError
         ? "The conversion service is unavailable. Try again when the app is deployed, or run it with `vercel dev`."
         : conversionError.message;
-      setError(message || "Something went wrong while converting this file.");
+      setError(message || "Something went wrong while converting this source.");
       setResult(null);
     } finally {
       setIsConverting(false);
@@ -379,7 +421,9 @@ function App() {
   };
 
   const handleOpenHistory = (item) => {
+    setSourceMode("file");
     setFile(null);
+    setChatgptUrl("");
     setError("");
     setCopyState("idle");
     setViewMode("rendered");
@@ -399,12 +443,14 @@ function App() {
 
   const hasOutput = Boolean(result && result.markdown);
   const statusText = isConverting
-    ? "Converting your file"
+    ? sourceMode === "chatgpt" ? "Fetching conversation" : "Converting your file"
     : hasOutput
       ? result.elapsed ? `Converted in ${result.elapsed.toFixed(1)}s` : "Loaded from this browser"
-      : file
-        ? "Ready to convert"
-        : "Waiting for a file";
+      : sourceMode === "chatgpt"
+        ? chatgptUrl.trim() ? "Ready to convert" : "Waiting for a public link"
+        : file
+          ? "Ready to convert"
+          : "Waiting for a file";
 
   return (
     <div className="app-shell">
@@ -453,14 +499,37 @@ function App() {
           </div>
         </section>
 
-        <section className="workbench" aria-label="File conversion workspace">
+        <section className="workbench" aria-label="Conversion workspace">
           <article className="panel source-panel">
             <div className="panel-header">
               <div>
                 <p className="section-kicker">Source</p>
-                <h2>Choose a file</h2>
+                <h2>{sourceMode === "chatgpt" ? "ChatGPT conversation" : "Choose a file"}</h2>
               </div>
-              <span className="quiet-status"><span className="status-dot" /> Local</span>
+              <span className="quiet-status"><span className="status-dot" /> {sourceMode === "chatgpt" ? "Public link" : "Local"}</span>
+            </div>
+
+            <div className="source-mode-switcher" role="tablist" aria-label="Choose source type">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sourceMode === "file"}
+                className={sourceMode === "file" ? "source-mode-active" : ""}
+                onClick={() => chooseSourceMode("file")}
+              >
+                <FileUp size={15} strokeWidth={1.8} />
+                <span>File</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sourceMode === "chatgpt"}
+                className={sourceMode === "chatgpt" ? "source-mode-active" : ""}
+                onClick={() => chooseSourceMode("chatgpt")}
+              >
+                <Link2 size={15} strokeWidth={1.8} />
+                <span>ChatGPT link</span>
+              </button>
             </div>
 
             <input
@@ -473,7 +542,40 @@ function App() {
               }}
             />
 
-            {!file ? (
+            {sourceMode === "chatgpt" ? (
+              <div className="url-source">
+                <label className="url-label" htmlFor="chatgpt-url">Public share link</label>
+                <div className="url-input-wrap">
+                  <Link2 size={17} strokeWidth={1.8} aria-hidden="true" />
+                  <input
+                    id="chatgpt-url"
+                    className="url-input"
+                    type="url"
+                    inputMode="url"
+                    autoComplete="off"
+                    spellCheck="false"
+                    value={chatgptUrl}
+                    onChange={(event) => {
+                      setChatgptUrl(event.target.value);
+                      setResult(null);
+                      setError("");
+                      setCopyState("idle");
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && chatgptUrl.trim()) handleConvert();
+                    }}
+                    placeholder="https://chatgpt.com/share/..."
+                    aria-describedby="chatgpt-url-help"
+                  />
+                  {chatgptUrl && (
+                    <button type="button" className="url-clear" onClick={() => { setChatgptUrl(""); setError(""); }} aria-label="Clear ChatGPT link" title="Clear link">
+                      <X size={16} strokeWidth={1.8} />
+                    </button>
+                  )}
+                </div>
+                <p id="chatgpt-url-help" className="url-help"><ShieldCheck size={14} strokeWidth={1.8} /> Only public shared conversations are supported. Use Share → Copy link in ChatGPT.</p>
+              </div>
+            ) : !file ? (
               <button
                 type="button"
                 className={`dropzone ${isDragging ? "dropzone-active" : ""}`}
@@ -526,15 +628,15 @@ function App() {
 
             {error && <div className="error-message" role="alert"><span className="error-mark">!</span><span>{error}</span></div>}
 
-            <button type="button" className="primary-button convert-button" onClick={handleConvert} disabled={!file || isConverting}>
+            <button type="button" className="primary-button convert-button" onClick={handleConvert} disabled={(sourceMode === "file" ? !file : !chatgptUrl.trim()) || isConverting}>
               {isConverting ? <span className="button-spinner" aria-hidden="true" /> : <Sparkles size={17} strokeWidth={1.9} />}
-              <span>{isConverting ? "Converting" : "Convert file"}</span>
+              <span>{isConverting ? (sourceMode === "chatgpt" ? "Fetching conversation" : "Converting") : (sourceMode === "chatgpt" ? "Convert conversation" : "Convert file")}</span>
               {!isConverting && <ChevronRight size={16} strokeWidth={2} aria-hidden="true" />}
             </button>
 
             <div className="source-footer">
               <div className="status-line" aria-live="polite"><span className={`status-dot ${isConverting ? "status-dot-loading" : hasOutput ? "status-dot-done" : ""}`} />{statusText}</div>
-              <span className="memory-note"><ShieldCheck size={14} strokeWidth={1.8} /> In-memory processing</span>
+              <span className="memory-note"><ShieldCheck size={14} strokeWidth={1.8} /> {sourceMode === "chatgpt" ? "Link is not stored" : "In-memory processing"}</span>
             </div>
           </article>
 
