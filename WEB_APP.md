@@ -38,6 +38,34 @@ local process uses the available CPU and RAM; GPU acceleration is not required
 by the built-in MarkItDown converters. Practical limits still come from the
 laptop's available memory, disk, and the individual converter.
 
+The local file picker accepts multiple files. Each file is converted as its
+own Markdown result, and the Output panel can download all successful results
+as one ZIP. Failed files remain visible in the batch list so they can be
+retried separately. The ChatGPT link tab also supports multiple public share
+links through **Add another link**. Each link is fetched and saved separately.
+The **Only this branch** toggle uses the conversation mapping exposed by the
+share page: when a fork is detectable, conversion starts at the first fork on
+the selected path; when the page exposes no fork, the full selected path is
+kept and the result is marked accordingly.
+
+### Local plugins
+
+Open Settings in the local edition to see the discovered `markitdown.plugin`
+entry points. Plugins are off by default, and multiple available plugins can
+be enabled together; the selection is saved under the user's local application
+data and applies to the next file conversion. The checkout includes the
+`markitdown-ocr` plugin for OCR-aware PDF, DOCX, PPTX, and XLSX conversion. To
+add another compatible plugin to the local environment, install it into the
+same virtual environment and refresh Settings:
+
+```powershell
+.venv\Scripts\python.exe -m pip install <plugin-package>
+```
+
+The local manager only enables packages that expose MarkItDown's plugin entry
+point. Plugin code runs on the laptop, so enable only packages you trust.
+Hosted Vercel requests keep third-party plugins disabled.
+
 ## Deployment
 
 The project is configured for a single Vercel project:

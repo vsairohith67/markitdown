@@ -11,13 +11,16 @@ from __future__ import annotations
 import base64
 import binascii
 import hmac
+import importlib
 import io
 import json
 import logging
 import os
 import re
 import sys
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -30,6 +33,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SRC = ROOT / "packages" / "markitdown" / "src"
 if str(PACKAGE_SRC) not in sys.path:
     sys.path.insert(0, str(PACKAGE_SRC))
+PLUGIN_SOURCE_ROOT = ROOT / "packages" / "markitdown-ocr" / "src"
+if PLUGIN_SOURCE_ROOT.is_dir() and str(PLUGIN_SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_SOURCE_ROOT))
 
 from markitdown import (  # noqa: E402
     FileConversionException,
@@ -58,6 +64,134 @@ def _limit_exceeded(value: int, limit: int) -> bool:
     """Treat a non-positive local limit as unlimited."""
 
     return limit > 0 and value > limit
+
+
+@dataclass(frozen=True)
+class PluginSpec:
+    """A discoverable local MarkItDown plugin."""
+
+    name: str
+    package: str
+    version: str
+    description: str
+    source: str
+    module_name: str | None = None
+    entry_point: Any = None
+    available: bool = True
+    load_error: str | None = None
+
+    def load(self) -> Any:
+        if not self.available:
+            raise RuntimeError(self.load_error or f"Plugin '{self.name}' is unavailable.")
+        if self.entry_point is not None:
+            return self.entry_point.load()
+        if self.module_name:
+            return importlib.import_module(self.module_name)
+        raise RuntimeError(f"Plugin '{self.name}' has no load target.")
+
+
+def discover_plugins() -> list[PluginSpec]:
+    """Discover installed entry-point plugins and bundled workspace plugins."""
+
+    specs: list[PluginSpec] = []
+    names: set[str] = set()
+    try:
+        discovered = list(entry_points(group="markitdown.plugin"))
+    except (TypeError, ValueError):
+        discovered = list(entry_points().select(group="markitdown.plugin"))
+
+    for plugin_entry_point in discovered:
+        name = str(plugin_entry_point.name)
+        if name in names:
+            continue
+        names.add(name)
+        distribution = getattr(plugin_entry_point, "dist", None)
+        package = str(getattr(distribution, "name", None) or name)
+        version = str(getattr(distribution, "version", None) or "unknown")
+        metadata = getattr(distribution, "metadata", {}) if distribution else {}
+        description = str(metadata.get("Summary", "Installed MarkItDown plugin."))
+        specs.append(
+            PluginSpec(
+                name=name,
+                package=package,
+                version=version,
+                description=description,
+                source="installed entry point",
+                entry_point=plugin_entry_point,
+            )
+        )
+
+    # The repository includes markitdown-ocr as a workspace plugin, but it is
+    # not necessarily installed into the user's virtual environment. Make it
+    # available to the local UI without changing the hosted deployment.
+    if "ocr" not in names:
+        try:
+            ocr_module = importlib.import_module("markitdown_ocr")
+            specs.append(
+                PluginSpec(
+                    name="ocr",
+                    package="markitdown-ocr",
+                    version=str(getattr(ocr_module, "__version__", "workspace")),
+                    description="OCR-enhanced PDF, DOCX, PPTX, and XLSX conversion.",
+                    source="bundled workspace plugin",
+                    module_name="markitdown_ocr",
+                )
+            )
+        except Exception as exc:
+            specs.append(
+                PluginSpec(
+                    name="ocr",
+                    package="markitdown-ocr",
+                    version="workspace",
+                    description="OCR-enhanced PDF, DOCX, PPTX, and XLSX conversion.",
+                    source="bundled workspace plugin",
+                    available=False,
+                    load_error=str(exc),
+                )
+            )
+
+    return sorted(specs, key=lambda item: item.name.lower())
+
+
+def plugin_catalog() -> list[dict[str, Any]]:
+    """Return serializable plugin metadata for the local settings panel."""
+
+    return [
+        {
+            "name": spec.name,
+            "package": spec.package,
+            "version": spec.version,
+            "description": spec.description,
+            "source": spec.source,
+            "available": spec.available,
+            "loadError": spec.load_error,
+        }
+        for spec in discover_plugins()
+    ]
+
+
+def register_selected_plugins(converter: MarkItDown, selected_plugins: list[str] | None = None) -> None:
+    """Register only explicitly selected plugins on one converter instance."""
+
+    selected = {name.strip() for name in (selected_plugins or []) if isinstance(name, str) and name.strip()}
+    if not selected:
+        return
+
+    specs = {spec.name: spec for spec in discover_plugins()}
+    unknown = sorted(selected.difference(specs))
+    if unknown:
+        raise ValueError(f"Unknown MarkItDown plugin(s): {', '.join(unknown)}")
+
+    for name in sorted(selected):
+        spec = specs[name]
+        try:
+            plugin = spec.load()
+            register_converters = getattr(plugin, "register_converters", None)
+            if not callable(register_converters):
+                raise RuntimeError("The plugin does not expose register_converters().")
+            register_converters(converter)
+        except Exception as exc:
+            raise ValueError(f"Plugin '{name}' could not be enabled: {exc}") from exc
 
 
 def _json_response(payload: dict[str, Any], status: int = 200) -> tuple[int, bytes]:
@@ -274,8 +408,11 @@ def _resolve_react_router_value(stream: list[Any], index: Any, memo: dict[int, A
     return value
 
 
-def _react_router_stream_messages(soup: BeautifulSoup) -> tuple[str | None, list[tuple[str, str]]]:
-    """Extract the selected conversation branch from ChatGPT's RSC stream."""
+def _react_router_stream_messages(
+    soup: BeautifulSoup,
+    branch_only: bool = False,
+) -> tuple[str | None, list[tuple[str, str]], bool]:
+    """Extract the selected conversation path from ChatGPT's RSC stream."""
 
     decoder = json.JSONDecoder()
     for script in soup.find_all("script"):
@@ -312,7 +449,7 @@ def _react_router_stream_messages(soup: BeautifulSoup) -> tuple[str | None, list
         if not isinstance(mapping, dict) or not isinstance(current_node, str):
             continue
 
-        branch: list[tuple[str, str]] = []
+        branch_nodes: list[tuple[str, str, str]] = []
         visited: set[str] = set()
         while current_node and current_node not in visited:
             visited.add(current_node)
@@ -324,14 +461,27 @@ def _react_router_stream_messages(soup: BeautifulSoup) -> tuple[str | None, list
                 role = _message_role(message)
                 text = _message_text(message.get("content"))
                 if role in {"user", "assistant"} and text:
-                    branch.append((role, text))
+                    branch_nodes.append((current_node, role, text))
             parent = node.get("parent")
             current_node = parent if isinstance(parent, str) else ""
 
-        if branch:
+        if branch_nodes:
+            chronological_nodes = list(reversed(branch_nodes))
+            branch_start: int | None = None
+            for index, (node_id, _role, _text) in enumerate(chronological_nodes):
+                parent_id = mapping.get(node_id, {}).get("parent")
+                parent = mapping.get(parent_id) if isinstance(parent_id, str) else None
+                children = parent.get("children") if isinstance(parent, dict) else None
+                if isinstance(children, list) and len(children) > 1:
+                    branch_start = index
+                    break
+            branch_detected = branch_start is not None
+            if branch_only and branch_start is not None:
+                chronological_nodes = chronological_nodes[branch_start:]
+            branch = [(role, text) for _node_id, role, text in chronological_nodes]
             title = conversation.get("title")
-            return title if isinstance(title, str) and title.strip() else None, list(reversed(branch))
-    return None, []
+            return title if isinstance(title, str) and title.strip() else None, branch, branch_detected
+    return None, [], False
 
 
 def _chatgpt_title(soup: BeautifulSoup) -> str:
@@ -341,7 +491,7 @@ def _chatgpt_title(soup: BeautifulSoup) -> str:
     return title or "ChatGPT conversation"
 
 
-def _chatgpt_html_to_markdown(html: bytes) -> tuple[str, str]:
+def _chatgpt_html_to_markdown(html: bytes, branch_only: bool = False) -> tuple[str, str, bool]:
     """Prefer message-aware extraction, with MarkItDown's HTML converter as fallback."""
 
     soup = BeautifulSoup(html, "html.parser")
@@ -361,8 +511,9 @@ def _chatgpt_html_to_markdown(html: bytes) -> tuple[str, str]:
         for value in _script_json_values(soup):
             _collect_json_messages(value, messages, seen)
 
+    branch_detected = False
     if not messages:
-        stream_title, stream_messages = _react_router_stream_messages(soup)
+        stream_title, stream_messages, branch_detected = _react_router_stream_messages(soup, branch_only=branch_only)
         if stream_messages:
             title = stream_title.strip() if stream_title else title
             messages.extend(stream_messages)
@@ -371,7 +522,7 @@ def _chatgpt_html_to_markdown(html: bytes) -> tuple[str, str]:
         markdown_parts = [f"# {title}"]
         for role, text in messages:
             markdown_parts.extend(["", f"## {role.title()}", "", text])
-        return title, "\n".join(markdown_parts).strip() + "\n"
+        return title, "\n".join(markdown_parts).strip() + "\n", branch_detected
 
     unavailable_text = soup.get_text(" ", strip=True).lower()
     if (
@@ -395,13 +546,15 @@ def _chatgpt_html_to_markdown(html: bytes) -> tuple[str, str]:
         raise ValueError("The shared page did not contain readable conversation messages.")
     if not markdown.startswith("# "):
         markdown = f"# {title}\n\n{markdown}"
-    return title, markdown.rstrip() + "\n"
+    return title, markdown.rstrip() + "\n", branch_detected
 
 
 def _convert_chatgpt_payload(payload: dict[str, Any]) -> dict[str, Any]:
     url = _validate_chatgpt_share_url(payload.get("url"))
     html, final_url = _fetch_chatgpt_share_html(url)
-    title, markdown = _chatgpt_html_to_markdown(html)
+    options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+    branch_only = bool(options.get("branchOnly", False))
+    title, markdown, branch_detected = _chatgpt_html_to_markdown(html, branch_only=branch_only)
     if _limit_exceeded(len(markdown.encode("utf-8")), MAX_MARKDOWN_BYTES):
         raise OverflowError("The Markdown result is too large to return from the hosted workspace.")
     return {
@@ -410,6 +563,8 @@ def _convert_chatgpt_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "title": title,
         "markdown": markdown,
         "sourceUrl": final_url,
+        "branchOnly": branch_only,
+        "branchDetected": branch_detected,
     }
 
 
@@ -419,6 +574,7 @@ def convert_file_stream(
     byte_count: int | None = None,
     mime_type: Any = None,
     options: Any = None,
+    plugins: list[str] | None = None,
 ) -> dict[str, Any]:
     """Convert a file-like object without forcing a base64 upload first.
 
@@ -441,8 +597,11 @@ def convert_file_stream(
         options = {}
 
     # Hosted plugins can execute arbitrary third-party code, so they are kept
-    # disabled even if a client sends an option attempting to enable them.
+    # disabled even if a client sends an option attempting to enable them. The
+    # local server passes an explicit allowlist through ``plugins``.
     converter = MarkItDown(enable_plugins=False)
+    if plugins:
+        register_selected_plugins(converter, plugins)
     result = converter.convert_stream(
         stream,
         stream_info=StreamInfo(

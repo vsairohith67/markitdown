@@ -449,6 +449,67 @@ h1 span {
   justify-content: center;
 }
 
+.url-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.batch-count {
+  color: var(--quiet);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.chatgpt-link-list {
+  display: grid;
+  gap: 12px;
+}
+
+.chatgpt-link-row {
+  display: grid;
+  gap: 8px;
+}
+
+.branch-toggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.branch-toggle input,
+.plugin-card input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+}
+
+.add-link-button {
+  min-height: 33px;
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 7px;
+  margin-top: 13px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--background);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.add-link-button:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
 .url-label {
   margin-bottom: 9px;
   color: var(--text);
@@ -596,6 +657,40 @@ h1 span {
   background: var(--accent-soft);
 }
 
+.file-batch {
+  display: grid;
+  gap: 10px;
+}
+
+.selected-file-list {
+  display: grid;
+  gap: 8px;
+  max-height: 272px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.selected-file-list .selected-file {
+  min-height: 72px;
+  padding: 11px 12px;
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+.selected-file-list .file-glyph {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+}
+
+.file-batch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 2px;
+}
+
 .selected-file-main {
   min-width: 0;
   display: flex;
@@ -705,6 +800,10 @@ h1 span {
 
 .option-row-locked .option-copy strong {
   color: var(--muted);
+}
+
+.plugin-option-row .text-button {
+  flex: 0 0 auto;
 }
 
 .switch-control {
@@ -868,6 +967,106 @@ h1 span {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 7px;
+}
+
+.batch-results {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+}
+
+.batch-results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.batch-result-list {
+  display: grid;
+  gap: 6px;
+  max-height: 190px;
+  overflow: auto;
+}
+
+.batch-result-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: var(--background);
+  color: var(--text);
+  text-align: left;
+}
+
+.batch-result-row:not(:disabled):hover,
+.batch-result-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.batch-result-row:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.batch-result-status {
+  width: 19px;
+  height: 19px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.batch-result-failed .batch-result-status {
+  background: #fff0f0;
+  color: #c93445;
+}
+
+.batch-result-copy {
+  min-width: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.batch-result-copy strong,
+.batch-result-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-result-copy strong {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.batch-result-copy small,
+.batch-help {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.batch-help {
+  margin: 0;
 }
 
 .view-switcher {
@@ -1289,6 +1488,8 @@ h1 span {
 
 .settings-modal {
   width: min(100%, 470px);
+  max-height: calc(100vh - 44px);
+  overflow-y: auto;
   padding: 25px;
   border: 1px solid var(--line);
   border-radius: 22px;
@@ -1369,6 +1570,128 @@ h1 span {
 
 .modal-facts svg {
   color: var(--accent);
+}
+
+.plugin-manager {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.plugin-manager-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.plugin-manager-heading h3 {
+  font-size: 16px;
+  font-weight: 720;
+  letter-spacing: -0.03em;
+}
+
+.plugin-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.plugin-warning svg {
+  flex: 0 0 auto;
+  color: #b56a1f;
+}
+
+.plugin-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 15px;
+}
+
+.plugin-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.plugin-card:hover {
+  border-color: var(--line-strong);
+}
+
+.plugin-card-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.plugin-card-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.plugin-card-copy strong {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.plugin-card-copy strong small,
+.plugin-card-copy > small {
+  color: var(--quiet);
+  font-size: 10px;
+  font-weight: 550;
+}
+
+.plugin-card-copy > span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.plugin-card-copy em {
+  color: var(--quiet);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.4;
+}
+
+.plugin-empty,
+.plugin-install-help {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 11px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.plugin-install-help strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.plugin-install-help code {
+  overflow-x: auto;
+  padding: 6px 7px;
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--text);
+  font-family: "SF Mono", "Cascadia Code", monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.plugin-notice {
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .modal-actions {

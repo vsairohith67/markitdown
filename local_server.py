@@ -39,14 +39,38 @@ from api.convert import (  # noqa: E402
     UnsupportedFormatException,
     convert_file_stream,
     convert_payload,
+    discover_plugins,
+    plugin_catalog,
 )
 
 
 LOGGER = logging.getLogger("markitdown.local")
+PLUGIN_CONFIG_DIR = Path(os.getenv("LOCALAPPDATA", str(ROOT / "local"))) / "MarkItDownStudio"
+PLUGIN_CONFIG_PATH = PLUGIN_CONFIG_DIR / "plugins.json"
 
 
 def _json_bytes(payload: dict[str, object]) -> bytes:
     return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+def _enabled_plugins() -> list[str]:
+    try:
+        payload = json.loads(PLUGIN_CONFIG_PATH.read_text(encoding="utf-8"))
+        enabled = payload.get("enabled", []) if isinstance(payload, dict) else []
+        if not isinstance(enabled, list):
+            return []
+        available = {spec.name for spec in discover_plugins() if spec.available}
+        return sorted({name for name in enabled if isinstance(name, str) and name.strip()}.intersection(available))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _save_enabled_plugins(enabled: list[str]) -> list[str]:
+    available = {spec.name for spec in discover_plugins() if spec.available}
+    clean = sorted({name.strip() for name in enabled if isinstance(name, str) and name.strip()}.intersection(available))
+    PLUGIN_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    PLUGIN_CONFIG_PATH.write_text(json.dumps({"enabled": clean}, indent=2) + "\n", encoding="utf-8")
+    return clean
 
 
 class LocalHandler(SimpleHTTPRequestHandler):
@@ -81,6 +105,9 @@ class LocalHandler(SimpleHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/api/health":
             self._write_json({"ok": True, "service": "MarkItDown Studio Local"})
+            return
+        if path == "/api/plugins":
+            self._write_json({"ok": True, "plugins": plugin_catalog(), "enabled": _enabled_plugins()})
             return
         if path.startswith("/api/"):
             self._write_json({"error": "Not found."}, status=404)
@@ -129,11 +156,12 @@ class LocalHandler(SimpleHTTPRequestHandler):
             byte_count=byte_count,
             mime_type=file_field.type,
             options={"keepDataUris": keep_data_uris},
+            plugins=_enabled_plugins(),
         )
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
-        if path != "/api/convert":
+        if path not in {"/api/convert", "/api/plugins"}:
             self._write_json({"error": "Not found."}, status=404)
             return
 
@@ -154,6 +182,13 @@ class LocalHandler(SimpleHTTPRequestHandler):
                 payload = json.loads(raw_body.decode("utf-8"))
                 if not isinstance(payload, dict):
                     raise ValueError("The request body must be a JSON object.")
+                if path == "/api/plugins":
+                    requested = payload.get("enabled", [])
+                    if not isinstance(requested, list):
+                        raise ValueError("The enabled plugin list must be an array.")
+                    enabled = _save_enabled_plugins(requested)
+                    self._write_json({"ok": True, "plugins": plugin_catalog(), "enabled": enabled})
+                    return
                 converted = convert_payload(payload)
             self._write_json({"ok": True, **converted})
         except OverflowError as exc:

@@ -19,6 +19,7 @@ import {
   Link2,
   LockKeyhole,
   Moon,
+  Plus,
   RotateCcw,
   Settings2,
   ShieldCheck,
@@ -138,6 +139,119 @@ function downloadMarkdown(filename, markdown) {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = `${stem}.md`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function safeMarkdownFilename(value, fallback = "document.md") {
+  const base = String(value || fallback)
+    .replace(/\.[^/.]+$/, "")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ")
+    .trim()
+    .replace(/\s+/g, "-")
+    .slice(0, 120);
+  return `${base || fallback.replace(/\.md$/, "")}.md`;
+}
+
+function uniqueMarkdownFilename(value, usedNames, fallback = "document.md") {
+  const initial = safeMarkdownFilename(value, fallback);
+  const stem = initial.replace(/\.md$/, "");
+  let candidate = initial;
+  let index = 2;
+  while (usedNames.has(candidate.toLowerCase())) {
+    candidate = `${stem}-${index}.md`;
+    index += 1;
+  }
+  usedNames.add(candidate.toLowerCase());
+  return candidate;
+}
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (let index = 0; index < bytes.length; index += 1) {
+    crc ^= bytes[index];
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function zipHeader(signature, nameLength, size, checksum, offset = 0) {
+  const length = signature === 0x04034b50 ? 30 : 46;
+  const header = new Uint8Array(length);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, signature, true);
+  if (signature === 0x04034b50) {
+    view.setUint16(4, 20, true);
+    view.setUint16(6, 0, true);
+    view.setUint16(8, 0, true);
+    view.setUint16(10, 0, true);
+    view.setUint16(12, 0, true);
+    view.setUint32(14, checksum, true);
+    view.setUint32(18, size, true);
+    view.setUint32(22, size, true);
+    view.setUint16(26, nameLength, true);
+    view.setUint16(28, 0, true);
+  } else {
+    view.setUint16(4, 20, true);
+    view.setUint16(6, 20, true);
+    view.setUint16(8, 0, true);
+    view.setUint16(10, 0, true);
+    view.setUint16(12, 0, true);
+    view.setUint16(14, 0, true);
+    view.setUint32(16, checksum, true);
+    view.setUint32(20, size, true);
+    view.setUint32(24, size, true);
+    view.setUint16(28, nameLength, true);
+    view.setUint16(30, 0, true);
+    view.setUint16(32, 0, true);
+    view.setUint16(34, 0, true);
+    view.setUint16(36, 0, true);
+    view.setUint32(38, 0, true);
+    view.setUint32(42, offset, true);
+  }
+  return header;
+}
+
+function makeMarkdownZip(items) {
+  const encoder = new TextEncoder();
+  const chunks = [];
+  const centralChunks = [];
+  let offset = 0;
+  let entryCount = 0;
+  for (const item of items) {
+    if (!item || !item.ok || !item.markdown) continue;
+    const nameBytes = encoder.encode(item.filename);
+    const dataBytes = encoder.encode(item.markdown);
+    const checksum = crc32(dataBytes);
+    const localHeader = zipHeader(0x04034b50, nameBytes.length, dataBytes.length, checksum);
+    chunks.push(localHeader, nameBytes, dataBytes);
+    centralChunks.push(zipHeader(0x02014b50, nameBytes.length, dataBytes.length, checksum, offset), nameBytes);
+    offset += localHeader.length + nameBytes.length + dataBytes.length;
+    entryCount += 1;
+  }
+
+  const centralSize = centralChunks.reduce((total, chunk) => total + chunk.length, 0);
+  const end = new Uint8Array(22);
+  const endView = new DataView(end.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(8, entryCount, true);
+  endView.setUint16(10, entryCount, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, offset, true);
+  chunks.push(...centralChunks, end);
+  return new Blob(chunks, { type: "application/zip" });
+}
+
+function downloadMarkdownZip(items) {
+  const blob = makeMarkdownZip(items);
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "markitdown-converted-files.zip";
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -276,10 +390,13 @@ function HistoryRow({ item, onOpen }) {
 
 function App() {
   const inputRef = useRef(null);
-  const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
   const [sourceMode, setSourceMode] = useState("file");
-  const [chatgptUrl, setChatgptUrl] = useState("");
+  const [chatgptLinks, setChatgptLinks] = useState([{ url: "", branchOnly: false }]);
   const [result, setResult] = useState(null);
+  const [batchResults, setBatchResults] = useState([]);
+  const [activeBatchIndex, setActiveBatchIndex] = useState(0);
+  const [batchProgress, setBatchProgress] = useState(null);
   const [history, setHistory] = useState(() => {
     const stored = readStorage(STORAGE_KEY, []);
     return Array.isArray(stored) ? stored : [];
@@ -294,6 +411,10 @@ function App() {
   const [accessToken, setAccessToken] = useState(() => readStorage(TOKEN_KEY, ""));
   const [draftToken, setDraftToken] = useState(accessToken);
   const [showSettings, setShowSettings] = useState(false);
+  const [plugins, setPlugins] = useState([]);
+  const [enabledPlugins, setEnabledPlugins] = useState([]);
+  const [pluginsLoading, setPluginsLoading] = useState(false);
+  const [pluginNotice, setPluginNotice] = useState("");
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
@@ -313,28 +434,71 @@ function App() {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [showSettings]);
 
+  useEffect(() => {
+    if (!IS_LOCAL_RUNTIME) return undefined;
+    let cancelled = false;
+    setPluginsLoading(true);
+    fetch("/api/plugins")
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Plugin discovery failed.")))
+      .then((payload) => {
+        if (cancelled) return;
+        setPlugins(Array.isArray(payload.plugins) ? payload.plugins : []);
+        setEnabledPlugins(Array.isArray(payload.enabled) ? payload.enabled : []);
+      })
+      .catch(() => {
+        if (!cancelled) setPluginNotice("Plugin discovery is unavailable until the local server is running.");
+      })
+      .finally(() => {
+        if (!cancelled) setPluginsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   const chooseSourceMode = (mode) => {
     if (mode === sourceMode) return;
     setSourceMode(mode);
-    setFile(null);
-    setChatgptUrl("");
+    setFiles([]);
+    setChatgptLinks([{ url: "", branchOnly: false }]);
     setResult(null);
+    setBatchResults([]);
+    setBatchProgress(null);
     setError("");
     setCopyState("idle");
     setIsDragging(false);
     if (inputRef.current) inputRef.current.value = "";
   };
 
-  const acceptFile = (candidate) => {
-    if (!candidate) return;
-    if (!IS_LOCAL_RUNTIME && candidate.size > MAX_FILE_BYTES) {
-      setError(`That file is ${formatBytes(candidate.size)}. The hosted workspace accepts files up to 3 MB.`);
+  const acceptFiles = (candidates) => {
+    const incoming = Array.from(candidates || []).filter(Boolean);
+    if (!incoming.length) return;
+    const accepted = [];
+    const rejected = [];
+    for (const candidate of incoming) {
+      if (!IS_LOCAL_RUNTIME && candidate.size > MAX_FILE_BYTES) {
+        rejected.push(`${candidate.name} (${formatBytes(candidate.size)})`);
+      } else {
+        accepted.push(candidate);
+      }
+    }
+    if (!accepted.length) {
+      if (rejected.length) setError(`${rejected.join(", ")} exceed the hosted 3 MB per-file limit.`);
       return;
     }
     setSourceMode("file");
-    setFile(candidate);
+    setFiles((current) => {
+      const seen = new Set(current.map((item) => `${item.name}:${item.size}:${item.lastModified}`));
+      return [...current, ...accepted.filter((item) => {
+        const key = `${item.name}:${item.size}:${item.lastModified}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })];
+    });
     setResult(null);
-    setError("");
+    setBatchResults([]);
+    setError(rejected.length
+      ? `${rejected.join(", ")} exceed the hosted 3 MB per-file limit. Other files were added.`
+      : "");
     setCopyState("idle");
   };
 
@@ -342,30 +506,100 @@ function App() {
     event.preventDefault();
     setIsDragging(false);
     const files = event.dataTransfer && event.dataTransfer.files;
-    acceptFile(files && files.length > 0 ? files[0] : null);
+    acceptFiles(files);
   };
 
-  const clearFile = () => {
-    setFile(null);
+  const clearFiles = () => {
+    setFiles([]);
     setResult(null);
+    setBatchResults([]);
+    setBatchProgress(null);
     setError("");
     setCopyState("idle");
     if (inputRef.current) inputRef.current.value = "";
   };
 
+  const removeFile = (indexToRemove) => {
+    setFiles((current) => current.filter((_, index) => index !== indexToRemove));
+    setResult(null);
+    setBatchResults([]);
+  };
+
+  const updateChatgptLink = (index, patch) => {
+    setChatgptLinks((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
+    setResult(null);
+    setBatchResults([]);
+    setError("");
+    setCopyState("idle");
+  };
+
+  const addChatgptLink = () => {
+    setChatgptLinks((current) => [...current, { url: "", branchOnly: false }]);
+  };
+
+  const removeChatgptLink = (indexToRemove) => {
+    setChatgptLinks((current) => current.length === 1
+      ? [{ url: "", branchOnly: false }]
+      : current.filter((_, index) => index !== indexToRemove));
+    setResult(null);
+    setBatchResults([]);
+  };
+
+  const selectBatchResult = (index) => {
+    const selected = batchResults[index];
+    if (!selected || !selected.ok) return;
+    setActiveBatchIndex(index);
+    setResult(selected);
+    setViewMode("rendered");
+  };
+
+  const savePluginSelection = async (nextEnabled) => {
+    if (!IS_LOCAL_RUNTIME) return;
+    setPluginNotice("Saving plugin selection…");
+    try {
+      const response = await fetch("/api/plugins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: nextEnabled }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Plugin settings could not be saved.");
+      setPlugins(Array.isArray(payload.plugins) ? payload.plugins : plugins);
+      setEnabledPlugins(Array.isArray(payload.enabled) ? payload.enabled : nextEnabled);
+      setPluginNotice("Saved. Enabled plugins apply to the next conversion.");
+    } catch (pluginError) {
+      setPluginNotice(pluginError.message || "Plugin settings could not be saved.");
+    }
+  };
+
+  const togglePlugin = (pluginName) => {
+    const nextEnabled = enabledPlugins.includes(pluginName)
+      ? enabledPlugins.filter((name) => name !== pluginName)
+      : [...enabledPlugins, pluginName];
+    setEnabledPlugins(nextEnabled);
+    savePluginSelection(nextEnabled);
+  };
+
   const handleConvert = async () => {
     if (isConverting) return;
-    const cleanChatgptUrl = chatgptUrl.trim();
-    if (sourceMode === "file" && !file) return;
-    if (sourceMode === "chatgpt" && !isChatGPTShareUrl(cleanChatgptUrl)) {
-      setError("Paste a public ChatGPT shared link that starts with https://chatgpt.com/share/.");
+    const cleanLinks = chatgptLinks.map((link) => ({ ...link, url: link.url.trim() })).filter((link) => link.url);
+    if (sourceMode === "file" && !files.length) return;
+    if (sourceMode === "chatgpt" && (!cleanLinks.length || cleanLinks.some((link) => !isChatGPTShareUrl(link.url)))) {
+      setError("Check each link. Public ChatGPT links must start with https://chatgpt.com/share/.");
       return;
     }
     setIsConverting(true);
     setError("");
     setCopyState("idle");
+    setResult(null);
+    setBatchResults([]);
+    setBatchProgress({ current: 0, total: sourceMode === "file" ? files.length : cleanLinks.length });
     const startedAt = performance.now();
-    try {
+    const sources = sourceMode === "file" ? files : cleanLinks;
+    const usedNames = new Set();
+    const convertedItems = [];
+
+    const requestConversion = async (source, index) => {
       const headers = {};
       if (accessToken.trim()) headers["X-MarkItDown-Token"] = accessToken.trim();
       let body;
@@ -373,29 +607,25 @@ function App() {
         headers["Content-Type"] = "application/json";
         body = JSON.stringify({
           source: "chatgpt",
-          url: cleanChatgptUrl,
-          options: { keepDataUris },
+          url: source.url,
+          options: { keepDataUris, branchOnly: Boolean(source.branchOnly) },
         });
       } else if (IS_LOCAL_RUNTIME) {
         const formData = new FormData();
         formData.append("source", "file");
-        formData.append("file", file, file.name);
+        formData.append("file", source, source.name);
         formData.append("keepDataUris", String(keepDataUris));
         body = formData;
       } else {
         headers["Content-Type"] = "application/json";
         body = JSON.stringify({
-          filename: file.name,
-          mimeType: file.type || null,
-          data: await readFileAsBase64(file),
+          filename: source.name,
+          mimeType: source.type || null,
+          data: await readFileAsBase64(source),
           options: { keepDataUris },
         });
       }
-      const response = await fetch("/api/convert", {
-        method: "POST",
-        headers,
-        body,
-      });
+      const response = await fetch("/api/convert", { method: "POST", headers, body });
       let payload = {};
       try {
         payload = await response.json();
@@ -403,26 +633,76 @@ function App() {
         payload = {};
       }
       if (!response.ok) throw new Error(payload.error || `Conversion failed (${response.status}).`);
-      const converted = {
-        ...payload,
-        elapsed: (performance.now() - startedAt) / 1000,
-        convertedAt: Date.now(),
-      };
-      setResult(converted);
-      setViewMode("rendered");
-      const historyItem = {
-        id: window.crypto && typeof window.crypto.randomUUID === "function"
-          ? window.crypto.randomUUID()
-          : `${Date.now()}-${converted.filename || (file && file.name) || "chatgpt-conversation.md"}`,
-        filename: converted.filename || (file && file.name) || "chatgpt-conversation.md",
-        bytes: converted.bytes || (file && file.size) || 0,
-        markdown: converted.markdown || "",
-        title: converted.title || null,
-        convertedAt: converted.convertedAt,
-      };
-      const nextHistory = [historyItem, ...history.filter((item) => item.filename !== historyItem.filename)].slice(0, 5);
-      setHistory(nextHistory);
-      persistHistory(nextHistory);
+      return payload;
+    };
+
+    try {
+      for (let index = 0; index < sources.length; index += 1) {
+        const source = sources[index];
+        setBatchProgress({ current: index, total: sources.length, name: sourceMode === "file" ? source.name : source.url });
+        try {
+          const payload = await requestConversion(source, index);
+          const requestedName = sourceMode === "chatgpt"
+            ? sources.length > 1
+              ? (payload.title || `chatgpt-conversation-${index + 1}`)
+              : (payload.filename || "chatgpt-conversation.md")
+            : (payload.filename || source.name);
+          const filename = uniqueMarkdownFilename(requestedName, usedNames, `chatgpt-conversation-${index + 1}.md`);
+          convertedItems.push({
+            ok: true,
+            ...payload,
+            filename,
+            sourceName: sourceMode === "file" ? source.name : source.url,
+            branchOnly: Boolean(source.branchOnly),
+            elapsed: (performance.now() - startedAt) / 1000,
+            convertedAt: Date.now(),
+          });
+        } catch (conversionError) {
+          convertedItems.push({
+            ok: false,
+            filename: sourceMode === "file" ? source.name : `ChatGPT link ${index + 1}`,
+            sourceName: sourceMode === "file" ? source.name : source.url,
+            error: conversionError.message || "Conversion failed.",
+          });
+        }
+        setBatchProgress({ current: index + 1, total: sources.length, name: sourceMode === "file" ? source.name : source.url });
+      }
+
+      const successfulItems = convertedItems.filter((item) => item.ok && item.markdown);
+      setBatchResults(convertedItems);
+      const firstSuccessIndex = convertedItems.findIndex((item) => item.ok && item.markdown);
+      if (firstSuccessIndex >= 0) {
+        setActiveBatchIndex(firstSuccessIndex);
+        setResult(successfulItems[0]);
+        setViewMode("rendered");
+        const historyItems = successfulItems.map((converted) => ({
+          id: window.crypto && typeof window.crypto.randomUUID === "function"
+            ? window.crypto.randomUUID()
+            : `${Date.now()}-${converted.filename}`,
+          filename: converted.filename,
+          bytes: converted.bytes || 0,
+          markdown: converted.markdown || "",
+          title: converted.title || null,
+          convertedAt: converted.convertedAt,
+        }));
+        setHistory((current) => {
+          const seen = new Set();
+          const nextHistory = [...historyItems, ...current].filter((item) => {
+            const key = item.filename.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          }).slice(0, 5);
+          persistHistory(nextHistory);
+          return nextHistory;
+        });
+      }
+      const failedItems = convertedItems.filter((item) => !item.ok);
+      if (failedItems.length) {
+        setError(`${failedItems.length} of ${convertedItems.length} item${convertedItems.length === 1 ? "" : "s"} failed. Open the batch list for details.`);
+      } else {
+        setError("");
+      }
     } catch (conversionError) {
       const message = conversionError instanceof TypeError
         ? IS_LOCAL_RUNTIME
@@ -433,6 +713,7 @@ function App() {
       setResult(null);
     } finally {
       setIsConverting(false);
+      setBatchProgress(null);
     }
   };
 
@@ -449,10 +730,12 @@ function App() {
 
   const handleOpenHistory = (item) => {
     setSourceMode("file");
-    setFile(null);
-    setChatgptUrl("");
+    setFiles([]);
+    setChatgptLinks([{ url: "", branchOnly: false }]);
     setError("");
     setCopyState("idle");
+    setBatchResults([]);
+    setBatchProgress(null);
     setViewMode("rendered");
     setResult({ ...item, ok: true, elapsed: null });
   };
@@ -469,14 +752,18 @@ function App() {
   };
 
   const hasOutput = Boolean(result && result.markdown);
+  const successfulBatchResults = batchResults.filter((item) => item.ok && item.markdown);
+  const failedBatchResults = batchResults.filter((item) => !item.ok);
   const statusText = isConverting
     ? sourceMode === "chatgpt" ? "Fetching conversation" : "Converting your file"
     : hasOutput
       ? result.elapsed ? `Converted in ${result.elapsed.toFixed(1)}s` : "Loaded from this browser"
       : sourceMode === "chatgpt"
-        ? chatgptUrl.trim() ? "Ready to convert" : "Waiting for a public link"
-        : file
-          ? "Ready to convert"
+        ? chatgptLinks.some((link) => link.url.trim())
+          ? `${chatgptLinks.filter((link) => link.url.trim()).length} link${chatgptLinks.filter((link) => link.url.trim()).length === 1 ? "" : "s"} ready`
+          : "Waiting for a public link"
+        : files.length
+          ? `${files.length} file${files.length === 1 ? "" : "s"} ready`
           : "Waiting for a file";
 
   return (
@@ -563,46 +850,55 @@ function App() {
               ref={inputRef}
               className="visually-hidden"
               type="file"
+              multiple
               onChange={(event) => {
-                const files = event.target && event.target.files;
-                acceptFile(files && files.length > 0 ? files[0] : null);
+                const selectedFiles = event.target && event.target.files;
+                acceptFiles(selectedFiles);
+                event.target.value = "";
               }}
             />
 
             {sourceMode === "chatgpt" ? (
               <div className="url-source">
-                <label className="url-label" htmlFor="chatgpt-url">Public share link</label>
-                <div className="url-input-wrap">
-                  <Link2 size={17} strokeWidth={1.8} aria-hidden="true" />
-                  <input
-                    id="chatgpt-url"
-                    className="url-input"
-                    type="url"
-                    inputMode="url"
-                    autoComplete="off"
-                    spellCheck="false"
-                    value={chatgptUrl}
-                    onChange={(event) => {
-                      setChatgptUrl(event.target.value);
-                      setResult(null);
-                      setError("");
-                      setCopyState("idle");
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && chatgptUrl.trim()) handleConvert();
-                    }}
-                    placeholder="https://chatgpt.com/share/..."
-                    aria-describedby="chatgpt-url-help"
-                  />
-                  {chatgptUrl && (
-                    <button type="button" className="url-clear" onClick={() => { setChatgptUrl(""); setError(""); }} aria-label="Clear ChatGPT link" title="Clear link">
-                      <X size={16} strokeWidth={1.8} />
-                    </button>
-                  )}
+                <div className="url-heading">
+                  <label className="url-label" htmlFor="chatgpt-url-0">Public share links</label>
+                  <span className="batch-count">{chatgptLinks.length} link{chatgptLinks.length === 1 ? "" : "s"}</span>
                 </div>
-                <p id="chatgpt-url-help" className="url-help"><ShieldCheck size={14} strokeWidth={1.8} /> Only public shared conversations are supported. Use Share → Copy link in ChatGPT.</p>
+                <div className="chatgpt-link-list">
+                  {chatgptLinks.map((link, index) => (
+                    <div className="chatgpt-link-row" key={`chatgpt-link-${index}`}>
+                      <div className="url-input-wrap">
+                        <Link2 size={17} strokeWidth={1.8} aria-hidden="true" />
+                        <input
+                          id={`chatgpt-url-${index}`}
+                          className="url-input"
+                          type="url"
+                          inputMode="url"
+                          autoComplete="off"
+                          spellCheck="false"
+                          value={link.url}
+                          onChange={(event) => updateChatgptLink(index, { url: event.target.value })}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && link.url.trim()) handleConvert();
+                          }}
+                          placeholder="https://chatgpt.com/share/..."
+                          aria-describedby="chatgpt-url-help"
+                        />
+                        <button type="button" className="url-clear" onClick={() => removeChatgptLink(index)} aria-label={`Remove ChatGPT link ${index + 1}`} title="Remove link">
+                          <X size={16} strokeWidth={1.8} />
+                        </button>
+                      </div>
+                      <label className="branch-toggle" title="Keep only the branch after the first fork in this conversation">
+                        <input type="checkbox" checked={Boolean(link.branchOnly)} onChange={(event) => updateChatgptLink(index, { branchOnly: event.target.checked })} />
+                        <span>Only this branch</span>
+                      </label>
+                    </div>
+                  ))}
+                </div>
+                <button type="button" className="add-link-button" onClick={addChatgptLink}><Plus size={15} strokeWidth={2} /> Add another link</button>
+                <p id="chatgpt-url-help" className="url-help"><ShieldCheck size={14} strokeWidth={1.8} /> Public shared conversations only. Branch mode starts at the first detected fork and keeps the selected path to the end.</p>
               </div>
-            ) : !file ? (
+            ) : !files.length ? (
               <button
                 type="button"
                 className={`dropzone ${isDragging ? "dropzone-active" : ""}`}
@@ -618,17 +914,27 @@ function App() {
                 <small>{IS_LOCAL_RUNTIME ? "No hosted upload cap · any file type supported by MarkItDown" : "Up to 3 MB · any file type supported by MarkItDown"}</small>
               </button>
             ) : (
-              <div className="selected-file">
-                <div className="selected-file-main">
-                  <FileGlyph filename={file.name} size={24} />
-                  <span>
-                    <strong title={file.name}>{file.name}</strong>
-                    <small>{formatBytes(file.size)} · {file.type || `${extensionFor(file.name).toUpperCase()} file`}</small>
-                  </span>
+              <div className="file-batch">
+                <div className="selected-file-list">
+                  {files.map((selectedFile, index) => (
+                    <div className="selected-file" key={`${selectedFile.name}-${selectedFile.size}-${selectedFile.lastModified}`}>
+                      <div className="selected-file-main">
+                        <FileGlyph filename={selectedFile.name} size={24} />
+                        <span>
+                          <strong title={selectedFile.name}>{selectedFile.name}</strong>
+                          <small>{formatBytes(selectedFile.size)} · {selectedFile.type || `${extensionFor(selectedFile.name).toUpperCase()} file`}</small>
+                        </span>
+                      </div>
+                      <button type="button" className="icon-button subtle" onClick={() => removeFile(index)} aria-label={`Remove ${selectedFile.name}`} title="Remove file">
+                        <X size={17} strokeWidth={1.8} />
+                      </button>
+                    </div>
+                  ))}
                 </div>
-                <button type="button" className="icon-button subtle" onClick={clearFile} aria-label="Remove selected file" title="Remove file">
-                  <X size={17} strokeWidth={1.8} />
-                </button>
+                <div className="file-batch-actions">
+                  <button type="button" className="outline-button compact-button" onClick={() => { if (inputRef.current) inputRef.current.click(); }}><Plus size={15} strokeWidth={1.9} /> Add more files</button>
+                  <button type="button" className="text-button" onClick={clearFiles}>Clear files</button>
+                </div>
               </div>
             )}
 
@@ -644,20 +950,34 @@ function App() {
                 </span>
                 <Switch checked={keepDataUris} onChange={(event) => setKeepDataUris(event.target.checked)} label="Keep inline image data" />
               </label>
-              <div className="option-row option-row-locked">
-                <span className="option-copy">
-                  <strong>Third-party plugins</strong>
-                  <small>Disabled in the hosted workspace for safety</small>
-                </span>
-                <LockKeyhole size={16} strokeWidth={1.8} aria-label="Disabled for safety" />
-              </div>
+              {IS_LOCAL_RUNTIME ? (
+                <div className="option-row plugin-option-row">
+                  <span className="option-copy">
+                    <strong>Third-party plugins</strong>
+                    <small>{enabledPlugins.length ? `${enabledPlugins.length} enabled locally` : "Off by default · manage in Settings"}</small>
+                  </span>
+                  <button type="button" className="text-button" onClick={() => setShowSettings(true)}>Manage</button>
+                </div>
+              ) : (
+                <div className="option-row option-row-locked">
+                  <span className="option-copy">
+                    <strong>Third-party plugins</strong>
+                    <small>Disabled in the hosted workspace for safety</small>
+                  </span>
+                  <LockKeyhole size={16} strokeWidth={1.8} aria-label="Disabled for safety" />
+                </div>
+              )}
             </div>
 
             {error && <div className="error-message" role="alert"><span className="error-mark">!</span><span>{error}</span></div>}
 
-            <button type="button" className="primary-button convert-button" onClick={handleConvert} disabled={(sourceMode === "file" ? !file : !chatgptUrl.trim()) || isConverting}>
+            <button type="button" className="primary-button convert-button" onClick={handleConvert} disabled={(sourceMode === "file" ? !files.length : !chatgptLinks.some((link) => link.url.trim())) || isConverting}>
               {isConverting ? <span className="button-spinner" aria-hidden="true" /> : <Sparkles size={17} strokeWidth={1.9} />}
-              <span>{isConverting ? (sourceMode === "chatgpt" ? "Fetching conversation" : "Converting") : (sourceMode === "chatgpt" ? "Convert conversation" : "Convert file")}</span>
+              <span>{isConverting
+                ? (batchProgress ? `Converting ${batchProgress.current}/${batchProgress.total}` : "Converting")
+                : sourceMode === "chatgpt"
+                  ? `Convert ${chatgptLinks.length > 1 ? "conversations" : "conversation"}`
+                  : `Convert ${files.length > 1 ? "files" : "file"}`}</span>
               {!isConverting && <ChevronRight size={16} strokeWidth={2} aria-hidden="true" />}
             </button>
 
@@ -688,6 +1008,40 @@ function App() {
                 </button>
               </div>
             </div>
+
+            {batchResults.length > 1 && (
+              <div className="batch-results" aria-label="Batch conversion results">
+                <div className="batch-results-header">
+                  <span>{successfulBatchResults.length} of {batchResults.length} converted</span>
+                  {successfulBatchResults.length > 1 && (
+                    <button type="button" className="outline-button compact-button" onClick={() => downloadMarkdownZip(successfulBatchResults)}>
+                      <Download size={15} strokeWidth={1.8} /> Download ZIP
+                    </button>
+                  )}
+                </div>
+                <div className="batch-result-list">
+                  {batchResults.map((item, index) => (
+                    <button
+                      type="button"
+                      key={`${item.filename}-${index}`}
+                      className={`batch-result-row ${item.ok ? "batch-result-success" : "batch-result-failed"} ${activeBatchIndex === index ? "batch-result-active" : ""}`}
+                      onClick={() => selectBatchResult(index)}
+                      disabled={!item.ok}
+                    >
+                      <span className="batch-result-status" aria-hidden="true">{item.ok ? "✓" : "!"}</span>
+                      <span className="batch-result-copy">
+                        <strong>{item.filename}</strong>
+                        <small>{item.ok
+                          ? `${formatBytes(item.bytes)} source · ${item.markdown.length.toLocaleString()} characters${item.branchOnly ? (item.branchDetected ? " · branch only" : " · no fork detected") : ""}`
+                          : item.error}</small>
+                      </span>
+                      {item.ok && <ChevronRight size={15} strokeWidth={1.8} aria-hidden="true" />}
+                    </button>
+                  ))}
+                </div>
+                {failedBatchResults.length > 0 && <p className="batch-help">Failed items stay listed so you can fix and retry them individually.</p>}
+              </div>
+            )}
 
             <div className={`preview-canvas ${hasOutput ? "preview-has-output" : ""}`}>
               {hasOutput ? (
@@ -764,6 +1118,48 @@ function App() {
               <span><ShieldCheck size={15} strokeWidth={1.8} /> {IS_LOCAL_RUNTIME ? "Files stay on this laptop" : "Files are processed in memory"}</span>
               <span><FileUp size={15} strokeWidth={1.8} /> {IS_LOCAL_RUNTIME ? "Local mode: no hosted upload cap" : "Hosted file limit: 3 MB"}</span>
             </div>
+            {IS_LOCAL_RUNTIME && (
+              <div className="plugin-manager">
+                <div className="plugin-manager-heading">
+                  <div>
+                    <p className="section-kicker">Local extensions</p>
+                    <h3>Third-party plugins</h3>
+                  </div>
+                  <button type="button" className="text-button" onClick={() => window.location.reload()}>Refresh</button>
+                </div>
+                <p className="modal-help plugin-warning"><LockKeyhole size={14} strokeWidth={1.8} /> Plugins execute Python code on this laptop. Enable only packages you trust; multiple plugins can be enabled together.</p>
+                {pluginsLoading ? (
+                  <div className="plugin-empty">Discovering local plugins…</div>
+                ) : plugins.length ? (
+                  <div className="plugin-list">
+                    {plugins.map((plugin) => (
+                      <label className={`plugin-card ${plugin.available ? "" : "plugin-card-disabled"}`} key={plugin.name}>
+                        <input
+                          type="checkbox"
+                          checked={enabledPlugins.includes(plugin.name)}
+                          disabled={!plugin.available}
+                          onChange={() => togglePlugin(plugin.name)}
+                        />
+                        <span className="plugin-card-copy">
+                          <strong>{plugin.package} <small>v{plugin.version}</small></strong>
+                          <span>{plugin.description}</span>
+                          <small>{plugin.source}{plugin.available ? "" : ` · ${plugin.loadError || "unavailable"}`}</small>
+                          {plugin.name === "ocr" && <em>Scanned-image OCR needs an OpenAI-compatible client and model; without them it falls back to normal extraction.</em>}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="plugin-empty">No MarkItDown plugins are installed. Add one to the local `.venv`, then refresh.</div>
+                )}
+                <div className="plugin-install-help">
+                  <strong>Add another trusted plugin</strong>
+                  <span>Install a package exposing the <code>markitdown.plugin</code> entry point, then refresh this page.</span>
+                  <code> .venv\Scripts\python.exe -m pip install &lt;plugin-package&gt;</code>
+                </div>
+                {pluginNotice && <p className="plugin-notice" aria-live="polite">{pluginNotice}</p>}
+              </div>
+            )}
             <div className="modal-actions">
               <button type="button" className="outline-button" onClick={() => setShowSettings(false)}>Cancel</button>
               <button type="button" className="primary-button" onClick={saveSettings}>Save settings</button>
