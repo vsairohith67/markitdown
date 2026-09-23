@@ -54,6 +54,12 @@ CHATGPT_REQUEST_HEADERS = {
 }
 
 
+def _limit_exceeded(value: int, limit: int) -> bool:
+    """Treat a non-positive local limit as unlimited."""
+
+    return limit > 0 and value > limit
+
+
 def _json_response(payload: dict[str, Any], status: int = 200) -> tuple[int, bytes]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     return status, body
@@ -81,7 +87,7 @@ def _decode_file(value: Any) -> bytes:
         raise ValueError("The uploaded file data is not valid base64.") from exc
     if not decoded:
         raise ValueError("The uploaded file is empty.")
-    if len(decoded) > MAX_FILE_BYTES:
+    if _limit_exceeded(len(decoded), MAX_FILE_BYTES):
         limit_mb = MAX_FILE_BYTES / 1_000_000
         raise OverflowError(f"This hosted workspace accepts files up to {limit_mb:g} MB.")
     return decoded
@@ -157,7 +163,7 @@ def _fetch_chatgpt_share_html(url: str) -> tuple[bytes, str]:
                 declared_length = int(content_length) if content_length else 0
             except ValueError:
                 declared_length = 0
-            if declared_length > MAX_CHATGPT_PAGE_BYTES:
+            if _limit_exceeded(declared_length, MAX_CHATGPT_PAGE_BYTES):
                 raise OverflowError("The ChatGPT share page is too large to process here.")
 
             chunks: list[bytes] = []
@@ -166,7 +172,7 @@ def _fetch_chatgpt_share_html(url: str) -> tuple[bytes, str]:
                 if not chunk:
                     continue
                 total += len(chunk)
-                if total > MAX_CHATGPT_PAGE_BYTES:
+                if _limit_exceeded(total, MAX_CHATGPT_PAGE_BYTES):
                     raise OverflowError("The ChatGPT share page is too large to process here.")
                 chunks.append(chunk)
             return b"".join(chunks), current_url
@@ -396,7 +402,7 @@ def _convert_chatgpt_payload(payload: dict[str, Any]) -> dict[str, Any]:
     url = _validate_chatgpt_share_url(payload.get("url"))
     html, final_url = _fetch_chatgpt_share_html(url)
     title, markdown = _chatgpt_html_to_markdown(html)
-    if len(markdown.encode("utf-8")) > MAX_MARKDOWN_BYTES:
+    if _limit_exceeded(len(markdown.encode("utf-8")), MAX_MARKDOWN_BYTES):
         raise OverflowError("The Markdown result is too large to return from the hosted workspace.")
     return {
         "filename": "chatgpt-conversation.md",
@@ -404,6 +410,56 @@ def _convert_chatgpt_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "title": title,
         "markdown": markdown,
         "sourceUrl": final_url,
+    }
+
+
+def convert_file_stream(
+    filename_value: Any,
+    stream: Any,
+    byte_count: int | None = None,
+    mime_type: Any = None,
+    options: Any = None,
+) -> dict[str, Any]:
+    """Convert a file-like object without forcing a base64 upload first.
+
+    The hosted JSON adapter still uses its small request limits. The local
+    server uses this stream path so large files can be spooled to disk by the
+    multipart parser and converted without the hosted 3 MB base64 ceiling.
+    """
+
+    filename = _safe_filename(filename_value)
+    if byte_count is not None:
+        if byte_count <= 0:
+            raise ValueError("The uploaded file is empty.")
+        if _limit_exceeded(byte_count, MAX_FILE_BYTES):
+            limit_mb = MAX_FILE_BYTES / 1_000_000
+            raise OverflowError(f"This hosted workspace accepts files up to {limit_mb:g} MB.")
+
+    if not isinstance(mime_type, str) or ";" in mime_type:
+        mime_type = None
+    if not isinstance(options, dict):
+        options = {}
+
+    # Hosted plugins can execute arbitrary third-party code, so they are kept
+    # disabled even if a client sends an option attempting to enable them.
+    converter = MarkItDown(enable_plugins=False)
+    result = converter.convert_stream(
+        stream,
+        stream_info=StreamInfo(
+            mimetype=mime_type,
+            extension=_extension_for(filename),
+            filename=filename,
+        ),
+        keep_data_uris=bool(options.get("keepDataUris", False)),
+    )
+    if _limit_exceeded(len(result.markdown.encode("utf-8")), MAX_MARKDOWN_BYTES):
+        raise OverflowError("The Markdown result is too large to return from the hosted workspace.")
+
+    return {
+        "filename": filename,
+        "bytes": byte_count or 0,
+        "title": result.title,
+        "markdown": result.markdown,
     }
 
 
@@ -416,37 +472,14 @@ def convert_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if source != "file":
         raise ValueError("The request specified an unsupported source.")
 
-    filename = _safe_filename(payload.get("filename"))
     data = _decode_file(payload.get("data"))
-    mime_type = payload.get("mimeType")
-    if not isinstance(mime_type, str) or ";" in mime_type:
-        mime_type = None
-
-    options = payload.get("options")
-    if not isinstance(options, dict):
-        options = {}
-
-    # Hosted plugins can execute arbitrary third-party code, so they are kept
-    # disabled even if a client sends an option attempting to enable them.
-    converter = MarkItDown(enable_plugins=False)
-    result = converter.convert_stream(
+    return convert_file_stream(
+        payload.get("filename"),
         io.BytesIO(data),
-        stream_info=StreamInfo(
-            mimetype=mime_type,
-            extension=_extension_for(filename),
-            filename=filename,
-        ),
-        keep_data_uris=bool(options.get("keepDataUris", False)),
+        byte_count=len(data),
+        mime_type=payload.get("mimeType"),
+        options=payload.get("options"),
     )
-    if len(result.markdown.encode("utf-8")) > MAX_MARKDOWN_BYTES:
-        raise OverflowError("The Markdown result is too large to return from the hosted workspace.")
-
-    return {
-        "filename": filename,
-        "bytes": len(data),
-        "title": result.title,
-        "markdown": result.markdown,
-    }
 
 
 class handler(BaseHTTPRequestHandler):

@@ -25,6 +25,19 @@ The interface is available at `http://localhost:3000`. The Python adapter can
 also be exercised directly with a Python environment that has the packages in
 `requirements.txt` installed.
 
+### Local desktop edition
+
+The local edition is independent from the hosted Vercel function. Run
+`local\\install-desktop-shortcut.ps1` once to create **MarkItDown Studio
+(Local)** on the Windows desktop. Opening that shortcut builds `dist/` when
+needed, starts `local_server.py` on `127.0.0.1:8765`, and opens the browser.
+
+Local file conversions use multipart uploads and the local `.venv`, so they do
+not use the hosted 3 MB base64/request limit. Files stay on the laptop. The
+local process uses the available CPU and RAM; GPU acceleration is not required
+by the built-in MarkItDown converters. Practical limits still come from the
+laptop's available memory, disk, and the individual converter.
+
 ## Deployment
 
 The project is configured for a single Vercel project:

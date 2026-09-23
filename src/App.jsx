@@ -33,6 +33,8 @@ const STORAGE_KEY = "markitdown-studio-history-v1";
 const THEME_KEY = "markitdown-studio-theme-v1";
 const TOKEN_KEY = "markitdown-studio-access-token-v1";
 const MAX_FILE_BYTES = 3_000_000;
+const IS_LOCAL_RUNTIME = typeof window !== "undefined"
+  && ["localhost", "127.0.0.1"].includes(window.location.hostname);
 const CHATGPT_SHARE_HOSTS = ["chatgpt.com", "chat.openai.com"];
 const MAX_RENDERED_PREVIEW_LINES = 1000;
 
@@ -325,7 +327,7 @@ function App() {
 
   const acceptFile = (candidate) => {
     if (!candidate) return;
-    if (candidate.size > MAX_FILE_BYTES) {
+    if (!IS_LOCAL_RUNTIME && candidate.size > MAX_FILE_BYTES) {
       setError(`That file is ${formatBytes(candidate.size)}. The hosted workspace accepts files up to 3 MB.`);
       return;
     }
@@ -364,24 +366,35 @@ function App() {
     setCopyState("idle");
     const startedAt = performance.now();
     try {
-      const headers = { "Content-Type": "application/json" };
+      const headers = {};
       if (accessToken.trim()) headers["X-MarkItDown-Token"] = accessToken.trim();
-      const requestBody = sourceMode === "chatgpt"
-        ? {
-            source: "chatgpt",
-            url: cleanChatgptUrl,
-            options: { keepDataUris },
-          }
-        : {
-            filename: file.name,
-            mimeType: file.type || null,
-            data: await readFileAsBase64(file),
-            options: { keepDataUris },
-          };
+      let body;
+      if (sourceMode === "chatgpt") {
+        headers["Content-Type"] = "application/json";
+        body = JSON.stringify({
+          source: "chatgpt",
+          url: cleanChatgptUrl,
+          options: { keepDataUris },
+        });
+      } else if (IS_LOCAL_RUNTIME) {
+        const formData = new FormData();
+        formData.append("source", "file");
+        formData.append("file", file, file.name);
+        formData.append("keepDataUris", String(keepDataUris));
+        body = formData;
+      } else {
+        headers["Content-Type"] = "application/json";
+        body = JSON.stringify({
+          filename: file.name,
+          mimeType: file.type || null,
+          data: await readFileAsBase64(file),
+          options: { keepDataUris },
+        });
+      }
       const response = await fetch("/api/convert", {
         method: "POST",
         headers,
-        body: JSON.stringify(requestBody),
+        body,
       });
       let payload = {};
       try {
@@ -412,7 +425,9 @@ function App() {
       persistHistory(nextHistory);
     } catch (conversionError) {
       const message = conversionError instanceof TypeError
-        ? "The conversion service is unavailable. Try again when the app is deployed, or run it with `vercel dev`."
+        ? IS_LOCAL_RUNTIME
+          ? "The local conversion service is unavailable. Start MarkItDown Studio from its desktop shortcut and try again."
+          : "The conversion service is unavailable. Try again when the app is deployed, or run it with `vercel dev`."
         : conversionError.message;
       setError(message || "Something went wrong while converting this source.");
       setResult(null);
@@ -474,7 +489,7 @@ function App() {
         <div className="topbar-actions">
           <div className="privacy-label">
             <ShieldCheck size={15} strokeWidth={1.8} aria-hidden="true" />
-            <span>Private by default</span>
+            <span>{IS_LOCAL_RUNTIME ? "Local-only" : "Private by default"}</span>
           </div>
           <button
             type="button"
@@ -502,12 +517,12 @@ function App() {
           <div className="intro-copy">
             <div className="accent-rule" aria-hidden="true" />
             <h1 id="page-title">Convert anything<br /><span>into clean Markdown.</span></h1>
-            <p>Drop a file, keep the structure, and take your content with you.</p>
+            <p>{IS_LOCAL_RUNTIME ? "Convert large files privately on this laptop." : "Drop a file, keep the structure, and take your content with you."}</p>
           </div>
           <div className="intro-aside">
             <div className="aside-icon"><Zap size={17} strokeWidth={1.8} /></div>
             <p>Made for thoughtful work</p>
-            <span>No account required. Your recent files stay in this browser.</span>
+            <span>{IS_LOCAL_RUNTIME ? "Files stay on this laptop. No upload cap." : "No account required. Your recent files stay in this browser."}</span>
           </div>
         </section>
 
@@ -600,7 +615,7 @@ function App() {
                 <span className="dropzone-icon"><UploadCloud size={25} strokeWidth={1.55} /></span>
                 <strong>Drop a file here</strong>
                 <span>or choose from your device</span>
-                <small>Up to 3 MB · any file type supported by MarkItDown</small>
+                <small>{IS_LOCAL_RUNTIME ? "No hosted upload cap · any file type supported by MarkItDown" : "Up to 3 MB · any file type supported by MarkItDown"}</small>
               </button>
             ) : (
               <div className="selected-file">
@@ -648,7 +663,7 @@ function App() {
 
             <div className="source-footer">
               <div className="status-line" aria-live="polite"><span className={`status-dot ${isConverting ? "status-dot-loading" : hasOutput ? "status-dot-done" : ""}`} />{statusText}</div>
-              <span className="memory-note"><ShieldCheck size={14} strokeWidth={1.8} /> {sourceMode === "chatgpt" ? "Link is not stored" : "In-memory processing"}</span>
+              <span className="memory-note"><ShieldCheck size={14} strokeWidth={1.8} /> {sourceMode === "chatgpt" ? "Link is not stored" : IS_LOCAL_RUNTIME ? "Processed on this laptop" : "In-memory processing"}</span>
             </div>
           </article>
 
@@ -746,8 +761,8 @@ function App() {
             </label>
             <p className="modal-help">If you add <code>MARKITDOWN_ACCESS_TOKEN</code> to your deployment, this browser will send the matching token with every conversion. Leave it blank for the default personal workspace.</p>
             <div className="modal-facts">
-              <span><ShieldCheck size={15} strokeWidth={1.8} /> Files are processed in memory</span>
-              <span><FileUp size={15} strokeWidth={1.8} /> Hosted file limit: 3 MB</span>
+              <span><ShieldCheck size={15} strokeWidth={1.8} /> {IS_LOCAL_RUNTIME ? "Files stay on this laptop" : "Files are processed in memory"}</span>
+              <span><FileUp size={15} strokeWidth={1.8} /> {IS_LOCAL_RUNTIME ? "Local mode: no hosted upload cap" : "Hosted file limit: 3 MB"}</span>
             </div>
             <div className="modal-actions">
               <button type="button" className="outline-button" onClick={() => setShowSettings(false)}>Cancel</button>
